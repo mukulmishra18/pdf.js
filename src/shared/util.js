@@ -18,14 +18,17 @@
 
 (function (root, factory) {
   if (typeof define === 'function' && define.amd) {
-    define('pdfjs/shared/util', ['exports', 'pdfjs/shared/compatibility'],
+    define('pdfjs/shared/util', ['exports', 'pdfjs/shared/compatibility',
+      'pdfjs/shared/streams-lib'],
       factory);
   } else if (typeof exports !== 'undefined') {
-    factory(exports, require('./compatibility.js'));
+    factory(exports, require('./compatibility.js'),
+      require('./streams-lib.js'));
   } else {
-    factory((root.pdfjsSharedUtil = {}), root.pdfjsSharedCompatibility);
+    factory((root.pdfjsSharedUtil = {}), root.pdfjsSharedCompatibility,
+      root.pdfjsSharedStreamsLib);
   }
-}(this, function (exports, compatibility) {
+}(this, function (exports, compatibility, streams) {
 
 var globalScope = (typeof window !== 'undefined') ? window :
                   (typeof global !== 'undefined') ? global :
@@ -1270,14 +1273,37 @@ function MessageHandler(sourceName, targetName, comObj) {
   this.callbackIndex = 1;
   this.postMessageTransfers = true;
   var callbacksCapabilities = this.callbacksCapabilities = Object.create(null);
+  var streamControllers = this.streamControllers = Object.create(null);
   var ah = this.actionHandler = Object.create(null);
-
+  var streamSinks = this.streamSinks = Object.create(null);
+  var ReadableStream = this.ReadableStream = streams.ReadableStream;
   this._onComObjOnMessage = function messageHandlerComObjOnMessage(event) {
     var data = event.data;
     if (data.targetName !== this.sourceName) {
       return;
     }
-    if (data.isReply) {
+    if (data.stream) {
+      switch(data.stream) {
+        case 'start':
+          if (data.success == true) {
+            streamControllers[data.streamId].startCall.resolve();
+          } else {
+            streamControllers[data.streamId].startCall.reject();
+          }
+          break;
+        case 'pull':
+          streamSinks[data.streamId].onPull(data.desiredSize);
+          break;
+        case 'enqueue':
+          streamControllers[data.streamId].controller.enqueue(data.chunk);
+          break;
+        case 'close':
+          streamControllers[data.streamId].controller.close();
+          break;
+        default:
+          throw new Error('Unexpected stream case');
+      }
+    } else if (data.isReply) {
       var callbackId = data.callbackId;
       if (data.callbackId in callbacksCapabilities) {
         var callback = callbacksCapabilities[callbackId];
@@ -1316,6 +1342,49 @@ function MessageHandler(sourceName, targetName, comObj) {
             isReply: true,
             callbackId: data.callbackId,
             error: reason
+          });
+        });
+      } else if (data.streamId) {
+        var streamId = data.streamId;
+        var that = this;
+        var sourceName = this.sourceName;
+        var targetName = data.sourceName;
+        var streamSink = {
+          enqueue: function (chunk) {
+            comObj.postMessage({
+              sourceName: sourceName,
+              targetName: targetName,
+              stream: 'enqueue',
+              streamId: streamId,
+              chunk: chunk
+            });
+          },
+          close: function () {
+            comObj.postMessage({
+              sourceName: sourceName,
+              targetName: targetName,
+              stream: 'close',
+              streamId: streamId
+            });
+          },
+          onPull: null,
+        };
+        streamSinks[streamId] = streamSink;
+        action[0].call(action[1], data.data, streamSink).then(function () {
+          comObj.postMessage({
+            sourceName: sourceName,
+            targetName: targetName,
+            stream: 'start',
+            success: true,
+            streamId: streamId
+          });
+        }, function () {
+          comObj.postMessage({
+            sourceName: sourceName,
+            targetName: targetName,
+            stream: 'start',
+            success: false,
+            streamId: streamId
           });
         });
       } else {
@@ -1377,6 +1446,52 @@ MessageHandler.prototype = {
       capability.reject(e);
     }
     return capability.promise;
+  },
+  sendWithStream:
+    function messageHandlerSendWithStream(actionName, data, transfers) {
+    var streamId = 1;
+    var that = this;
+    var sourceName = this.sourceName;
+    var targetName = this.targetName;
+    return new this.ReadableStream({
+      start: function (controller) {
+        var capability = createPromiseCapability();
+        that.streamControllers[streamId] = {
+          controller: controller,
+          startCall: capability
+        };
+        that.postMessage({
+          sourceName: sourceName,
+          targetName: targetName,
+          action: actionName,
+          streamId: streamId,
+          data: data
+        });
+        return capability.promise;
+      },
+      pull: function (controller) {
+        that.postMessage({
+          sourceName: sourceName,
+          targetName: targetName,
+          stream: 'pull',
+          streamId: streamId,
+          desiredSize: controller.desiredSize
+        });
+      },
+      cancel: function (error) {
+       that.postMessage({
+        sourceName: sourceName,
+        targetName: targetName,
+        stream: 'close',
+        streamId: streamId
+       });
+      }
+    }, {
+      highWaterMark: 2,
+      size: function (arr) {
+        return arr.length;
+      }
+    });
   },
   /**
    * Sends raw message to the comObj.

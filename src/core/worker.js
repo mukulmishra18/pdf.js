@@ -897,28 +897,52 @@ var WorkerMessageHandler = {
       });
     }, this);
 
-    handler.on('GetTextContent', function wphExtractText(data) {
+    handler.on('GetTextContent', function wphExtractText(data, sink) {
       var pageIndex = data.pageIndex;
       var normalizeWhitespace = data.normalizeWhitespace;
       var combineTextItems = data.combineTextItems;
-      return pdfManager.getPage(pageIndex).then(function(page) {
-        var task = new WorkerTask('GetTextContent: page ' + pageIndex);
-        startWorkerTask(task);
-        var pageNum = pageIndex + 1;
-        var start = Date.now();
-        return page.extractTextContent(handler, task, normalizeWhitespace,
-                                       combineTextItems).then(
-            function(textContent) {
-          finishWorkerTask(task);
-          info('text indexing: page=' + pageNum + ' - time=' +
-               (Date.now() - start) + 'ms');
-          return textContent;
-        }, function (reason) {
-          finishWorkerTask(task);
-          if (task.terminated) {
-            return; // ignoring errors from the terminated thread
-          }
-          throw reason;
+      var getChunk = null;
+      sink.onPull = function (desiredSize) {
+        var chunk = getChunk(desiredSize);
+        if (chunk === 0) {
+          sink.close();
+          return;
+        }
+        sink.enqueue(chunk);
+      }
+      return new Promise(function (resolve, reject) {
+        pdfManager.getPage(pageIndex).then(function(page) {
+          var task = new WorkerTask('GetTextContent: page ' + pageIndex);
+          startWorkerTask(task);
+          var pageNum = pageIndex + 1;
+          var start = Date.now();
+          page.extractTextContent(handler, task, normalizeWhitespace,
+                                         combineTextItems).then(
+              function(textContent) {
+            finishWorkerTask(task);
+            info('text indexing: page=' + pageNum + ' - time=' +
+                 (Date.now() - start) + 'ms');
+            var items = textContent.items;
+            var styles = textContent.styles;
+            var stylesKeys = Object.keys(styles);
+            getChunk = function (desiredSize) {
+              if(items.length === 0) {
+                return 0;
+              } else if (stylesKeys.length !== 0) {
+                var stylesKey = stylesKeys.splice(0, 1);
+                return [stylesKey[0], styles[stylesKey]];
+              } else if (items.length !== 0) {
+                return items.splice(0, desiredSize);
+              }
+            }
+            resolve();
+          }, function (reason) {
+            finishWorkerTask(task);
+            if (task.terminated) {
+              return; // ignoring errors from the terminated thread
+            }
+            reject(reason);
+          });
         });
       });
     });

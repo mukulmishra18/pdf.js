@@ -962,13 +962,40 @@ var PDFPageProxy = (function PDFPageProxyClosure() {
      * object that represent the page text content.
      */
     getTextContent: function PDFPageProxy_getTextContent(params) {
-      return this.transport.messageHandler.sendWithPromise('GetTextContent', {
+      var readableStream = this.transport.messageHandler.sendWithStream('GetTextContent', {
         pageIndex: this.pageNumber - 1,
         normalizeWhitespace: (params && params.normalizeWhitespace === true ?
                               true : /* Default */ false),
         combineTextItems: (params && params.disableCombineTextItems === true ?
                            false : /* Default */ true),
       });
+      return readAllChunks(readableStream);
+      function readAllChunks (readableStream) {
+        var reader = readableStream.getReader();
+        var textContent = {
+          items: [],
+          styles: {}
+        };
+
+        return pump();
+
+        function pump () {
+          return reader.read().then(function (result) {
+            if (result.done) {
+              return textContent;
+            }
+            if (typeof result.value[0] == 'string') {
+              textContent.styles[result.value[0]] = result.value[1];
+            } else {
+              textContent.items.push(result.value[0]);
+              if(result.value[1]) {
+                textContent.items.push(result.value[1]);
+              }
+            }
+            return pump();
+          });
+        }
+      }
     },
 
     /**
