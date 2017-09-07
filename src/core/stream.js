@@ -21,6 +21,69 @@ import { Jbig2Image } from './jbig2';
 import { JpegImage } from './jpg';
 import { JpxImage } from './jpx';
 
+var BinaryReader = (function BinaryReader() {
+  function BinaryReader(arrayBuffer, start, length) {
+    this.bytes = (arrayBuffer instanceof Uint8Array ?
+                  arrayBuffer : new Uint8Array(arrayBuffer));
+    this.start = start || 0;
+    this.pos = this.start;
+    this.end = (start + length) || this.bytes.length;
+  }
+
+  BinaryReader.prototype = {
+    getByte: function Stream_getByte() {
+      if (this.pos >= this.end) {
+        return -1;
+      }
+      return this.bytes[this.pos++];
+    },
+    getUint16: function Stream_getUint16() {
+      var b0 = this.getByte();
+      var b1 = this.getByte();
+      if (b0 === -1 || b1 === -1) {
+        return -1;
+      }
+      return (b0 << 8) + b1;
+    },
+    getInt32: function Stream_getInt32() {
+      var b0 = this.getByte();
+      var b1 = this.getByte();
+      var b2 = this.getByte();
+      var b3 = this.getByte();
+      return (b0 << 24) + (b1 << 16) + (b2 << 8) + b3;
+    },
+    // returns subarray of original buffer
+    // should only be read
+    getBytes: function Stream_getBytes(length) {
+      var bytes = this.bytes;
+      var pos = this.pos;
+      var strEnd = this.end;
+
+      if (!length) {
+        return bytes.subarray(pos, strEnd);
+      }
+      var end = pos + length;
+      if (end > strEnd) {
+        end = strEnd;
+      }
+      this.pos = end;
+      return bytes.subarray(pos, end);
+    },
+    peekByte: function Stream_peekByte() {
+      var peekedByte = this.getByte();
+      this.pos--;
+      return peekedByte;
+    },
+    peekBytes: function Stream_peekBytes(length) {
+      var bytes = this.getBytes(length);
+      this.pos -= bytes.length;
+      return bytes;
+    },
+  };
+
+  return BinaryReader;
+})();
+
 var Stream = (function StreamClosure() {
   function Stream(arrayBuffer, start, length, dict) {
     this.bytes = (arrayBuffer instanceof Uint8Array ?
